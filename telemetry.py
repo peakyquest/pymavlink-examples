@@ -174,22 +174,37 @@ class GPS:
         self.latitude = None
         self.longitude = None
         self.rel_alt = None
+        self._thread = None
+        self._stop_event = threading.Event()
 
     def gps_3d_location(self):
         self.vehicle.mav.request_data_stream_send(self.vehicle.target_system, self.vehicle.target_component,
                                                   mavutil.mavlink.MAV_DATA_STREAM_POSITION, 1, 1)
-        while True:
+        while not self._stop_event.is_set():
             msg = self.vehicle.recv_match(blocking=True)
             if msg:
                 if msg.get_type() == 'GLOBAL_POSITION_INT':
                     self.latitude = msg.lat / 1e7
                     self.longitude = msg.lon / 1e7
                     self.rel_alt = msg.relative_alt / 1000
+
                     print("GPS Coordinates (Global Position Int):")
-                    print(f"Latitude: {msg.lat / 1e7} degrees")
-                    print(f"Longitude: {msg.lon / 1e7} degrees")
+                    print(f"Latitude: {self.latitude} degrees")
+                    print(f"Longitude: {self.longitude} degrees")
                     print(f"Altitude: {msg.alt / 1000.0} meters")
-                    print(f"Relative Altitude: {msg.relative_alt / 1000.0} meters")
+                    print(f"Relative Altitude: {self.rel_alt} meters")
+
+    def start_thread(self):
+        if self._thread is None:
+            self._thread = threading.Thread(target=self.gps_3d_location)
+            self._thread.start()
+
+    def stop_thread(self):
+        if self._thread is not None:
+            self._stop_event.set()
+            self._thread.join()
+            self._thread = None
+            self._stop_event.clear()
 
 
 
@@ -197,22 +212,36 @@ class Compass:
     def __init__(self, vehicle):
         self.vehicle = vehicle
         self.heading = None
+        self._thread = None
+        self._stop_event = threading.Event()
 
     def get_heading(self):
         # Request compass data stream
         self.vehicle.mav.request_data_stream_send(self.vehicle.target_system, self.vehicle.target_component,
                                                   mavutil.mavlink.MAV_DATA_STREAM_EXTRA1, 1, 1)
-        while True:
+        while not self._stop_event.is_set():
             msg = self.vehicle.recv_match(blocking=True)
             if msg:
                 if msg.get_type() == 'VFR_HUD':
                     self.heading = msg.heading
                     print("Compass Heading (VFR HUD):")
-                    print(f"Heading: {msg.heading} degrees")
+                    print(f"Heading: {self.heading} degrees")
                 elif msg.get_type() == 'ATTITUDE':
                     self.heading = msg.yaw
-                    # print("Compass Heading (Attitude):")
-                    print(f"Heading: {msg.yaw} degrees")
+                    print("Compass Heading (Attitude):")
+                    print(f"Heading: {self.heading} degrees")
+
+    def start_thread(self):
+        if self._thread is None:
+            self._thread = threading.Thread(target=self.get_heading)
+            self._thread.start()
+
+    def stop_thread(self):
+        if self._thread is not None:
+            self._stop_event.set()
+            self._thread.join()
+            self._thread = None
+            self._stop_event.clear()
 
 
 class Waypoint:
