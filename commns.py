@@ -1,6 +1,7 @@
 import time
 from pymavlink import mavutil, mavwp
 import pymavlink.dialects.v20.all as dialect
+import threading
 
 
 class Connection:
@@ -95,38 +96,6 @@ class FlightController:
         self.vehicle.motors_disarmed_wait()
         print("Turning off Motors")
 
-    def set_mode(self, mode):
-        # function to set the vehicle mode (i-e guided auto rtl etc)
-        mode_id = self.vehicle.mode_mapping()[mode]
-        self.vehicle.set_mode_apm(mode_id)
-        while True:
-            ack = self.vehicle.recv_match(type='COMMAND_ACK', blocking=True, timeout=10)
-            if ack and ack.command == mavutil.mavlink.MAV_CMD_DO_SET_MODE and ack.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
-                print("{} mode set successfully...".format(mode))
-                break
-
-    def load_all_parameters(self, file_path):
-        with open(file_path, 'r') as f:
-            lines = f.readlines()
-            for line in lines:
-                param_name, param_value = line.strip().split(',')
-                if '.' in param_value:
-                    param_value = float(param_value)
-                    self.set_parameter_value(param_name, param_value)
-                else:
-                    param_value = int(param_value)
-                    self.set_parameter_value(param_name, param_value)
-
-    def get_mode(self):
-        msg = self.vehicle.recv_match(type='HEARTBEAT', blocking=True)
-        if msg:
-            mode = msg.custom_mode
-            if mode in self.flight_modes:
-                print(f"Current flight mode: {self.flight_modes[mode]}")
-            else:
-                print(f"Unknown flight mode: {mode}")
-
-
     def set_parameter_value(self, param_id, param_value):
         # get parameter type first
         _, param_type = self.get_parameter_value(param_id)
@@ -139,9 +108,27 @@ class FlightController:
             param_value,
             param_type
         )
-        # Optionally wait for ACK (PARAM_VALUE message) to confirm parameter was set
-        ack_msg = self.vehicle.recv_match(type='PARAM_VALUE', blocking=True)
-        print(ack_msg)
+
+
+    def set_mode(self, mode):
+        # function to set the vehicle mode (i-e guided auto rtl etc)
+        mode_id = self.vehicle.mode_mapping()[mode]
+        self.vehicle.set_mode_apm(mode_id)
+        while True:
+            ack = self.vehicle.recv_match(type='COMMAND_ACK', blocking=True, timeout=10)
+            if ack and ack.command == mavutil.mavlink.MAV_CMD_DO_SET_MODE and ack.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
+                print("{} mode set successfully...".format(mode))
+                break
+
+    def get_mode(self):
+        msg = self.vehicle.recv_match(type='HEARTBEAT', blocking=True)
+        if msg:
+            mode = msg.custom_mode
+            if mode in self.flight_modes:
+                print(f"Current flight mode: {self.flight_modes[mode]}")
+            else:
+                print(f"Unknown flight mode: {mode}")
+
 
 
     def get_parameter_value(self, parameter_name):
@@ -153,9 +140,7 @@ class FlightController:
             -1  # Request the value of all instances (use 0 for specific index)
         )
         message = self.vehicle.recv_match(type='PARAM_VALUE', blocking=True).to_dict()
-        print(message)
         return message['param_value'], message['param_type']
-
 
     # To land the vehicle
     def land_vehicle(self):
@@ -207,6 +192,7 @@ class GPS:
                     print(f"Relative Altitude: {msg.relative_alt / 1000.0} meters")
 
 
+
 class Compass:
     def __init__(self, vehicle):
         self.vehicle = vehicle
@@ -237,112 +223,111 @@ class Waypoint:
     def init_target_locations(self, target_locations):
         self.target_locations = target_locations
 
-        msg = dialect.MAVLink_mission_count_message(target_system=self.vehicle.target_system,
+        message = dialect.MAVLink_mission_count_message(target_system=self.vehicle.target_system,
                                                     target_component=self.vehicle.target_component,
                                                     count=len(target_locations) + 2,
                                                     mission_type=dialect.MAV_MISSION_TYPE_MISSION)
-        self.vehicle.mav.send(msg)
+        self.vehicle.mav.send(message)
         # catch a message
-        message = self.vehicle.recv_match(blocking=True)
-        # convert this message to dictionary
-        message = message.to_dict()
-        # check this message is MISSION_REQUEST
-        if message["mavpackettype"] == dialect.MAVLink_mission_request_message.msgname:
-            # check this request is for mission items
-            if message["mission_type"] == dialect.MAV_MISSION_TYPE_MISSION:
-                # get the sequence number of requested mission item
-                seq = message["seq"]
-                # create mission item int message
-                if seq == 0:
-                    # create mission item int message that contains the home location (0th mission item)
-                    message = dialect.MAVLink_mission_item_int_message(target_system=self.vehicle.target_system,
-                                                                       target_component=self.vehicle.target_component,
-                                                                       seq=seq,
-                                                                       frame=dialect.MAV_FRAME_GLOBAL,
-                                                                       command=dialect.MAV_CMD_NAV_WAYPOINT,
-                                                                       current=0,
-                                                                       autocontinue=0,
-                                                                       param1=0,
-                                                                       param2=0,
-                                                                       param3=0,
-                                                                       param4=0,
-                                                                       x=0,
-                                                                       y=0,
-                                                                       z=0,
-                                                                       mission_type=dialect.MAV_MISSION_TYPE_MISSION)
+        while True:
+            message = self.vehicle.recv_match(blocking=True)
+            # convert this message to dictionary
+            message = message.to_dict()
+            # check this message is MISSION_REQUEST
+            if message["mavpackettype"] == dialect.MAVLink_mission_request_message.msgname:
+                # check this request is for mission items
+                if message["mission_type"] == dialect.MAV_MISSION_TYPE_MISSION:
+                    # get the sequence number of requested mission item
+                    seq = message["seq"]
+                    # create mission item int message
+                    if seq == 0:
+                        # create mission item int message that contains the home location (0th mission item)
+                        message = dialect.MAVLink_mission_item_int_message(target_system=self.vehicle.target_system,
+                                                                           target_component=self.vehicle.target_component,
+                                                                           seq=seq,
+                                                                           frame=dialect.MAV_FRAME_GLOBAL,
+                                                                           command=dialect.MAV_CMD_NAV_WAYPOINT,
+                                                                           current=0,
+                                                                           autocontinue=0,
+                                                                           param1=0,
+                                                                           param2=0,
+                                                                           param3=0,
+                                                                           param4=0,
+                                                                           x=0,
+                                                                           y=0,
+                                                                           z=0,
+                                                                           mission_type=dialect.MAV_MISSION_TYPE_MISSION)
 
-                # send takeoff mission item
-                elif seq == 1:
+                    # send takeoff mission item
+                    elif seq == 1:
 
-                    # create mission item int message that contains the takeoff command
-                    message = dialect.MAVLink_mission_item_int_message(target_system=self.vehicle.target_system,
-                                                                       target_component=self.vehicle.target_component,
-                                                                       seq=seq,
-                                                                       frame=dialect.MAV_FRAME_GLOBAL_RELATIVE_ALT,
-                                                                       command=dialect.MAV_CMD_NAV_TAKEOFF,
-                                                                       current=0,
-                                                                       autocontinue=0,
-                                                                       param1=0,
-                                                                       param2=0,
-                                                                       param3=0,
-                                                                       param4=0,
-                                                                       x=0,
-                                                                       y=0,
-                                                                       z=target_locations[0][2],
-                                                                       mission_type=dialect.MAV_MISSION_TYPE_MISSION)
-                # send target locations to the vehicle
-                else:
-                    # create mission item int message that contains a target location
-                    message = dialect.MAVLink_mission_item_int_message(target_system=self.vehicle.target_system,
-                                                                       target_component=self.vehicle.target_component,
-                                                                       seq=seq,
-                                                                       frame=dialect.MAV_FRAME_GLOBAL_RELATIVE_ALT,
-                                                                       command=dialect.MAV_CMD_NAV_WAYPOINT,
-                                                                       current=0,
-                                                                       autocontinue=0,
-                                                                       param1=0,
-                                                                       param2=0,
-                                                                       param3=0,
-                                                                       param4=0,
-                                                                       x=int(target_locations[seq - 2][0] * 1e7),
-                                                                       y=int(target_locations[seq - 2][1] * 1e7),
-                                                                       z=target_locations[seq - 2][2],
-                                                                       mission_type=dialect.MAV_MISSION_TYPE_MISSION)
-                # send the mission item int message to the vehicle
-                self.vehicle.mav.send(message)
-        # check this message is MISSION_ACK
-        elif message["mavpackettype"] == dialect.MAVLink_mission_ack_message.msgname:
-            # check this acknowledgement is for mission and it is accepted
-            if message["mission_type"] == dialect.MAV_MISSION_TYPE_MISSION and \
-                    message["type"] == dialect.MAV_MISSION_ACCEPTED:
-                # break the loop since the upload is successful
-                print("Mission upload is successful")
+                        # create mission item int message that contains the takeoff command
+                        message = dialect.MAVLink_mission_item_int_message(target_system=self.vehicle.target_system,
+                                                                           target_component=self.vehicle.target_component,
+                                                                           seq=seq,
+                                                                           frame=dialect.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+                                                                           command=dialect.MAV_CMD_NAV_TAKEOFF,
+                                                                           current=0,
+                                                                           autocontinue=0,
+                                                                           param1=0,
+                                                                           param2=0,
+                                                                           param3=0,
+                                                                           param4=0,
+                                                                           x=0,
+                                                                           y=0,
+                                                                           z=target_locations[0][2],
+                                                                           mission_type=dialect.MAV_MISSION_TYPE_MISSION)
+                    # send target locations to the vehicle
+                    else:
+                        # create mission item int message that contains a target location
+                        message = dialect.MAVLink_mission_item_int_message(target_system=self.vehicle.target_system,
+                                                                           target_component=self.vehicle.target_component,
+                                                                           seq=seq,
+                                                                           frame=dialect.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+                                                                           command=dialect.MAV_CMD_NAV_WAYPOINT,
+                                                                           current=0,
+                                                                           autocontinue=0,
+                                                                           param1=0,
+                                                                           param2=0,
+                                                                           param3=0,
+                                                                           param4=0,
+                                                                           x=int(target_locations[seq - 2][0] * 1e7),
+                                                                           y=int(target_locations[seq - 2][1] * 1e7),
+                                                                           z=target_locations[seq - 2][2],
+                                                                           mission_type=dialect.MAV_MISSION_TYPE_MISSION)
+                    # send the mission item int message to the vehicle
+                    self.vehicle.mav.send(message)
+            # check this message is MISSION_ACK
+            elif message["mavpackettype"] == dialect.MAVLink_mission_ack_message.msgname:
+                # check this acknowledgement is for mission and it is accepted
+                if message["mission_type"] == dialect.MAV_MISSION_TYPE_MISSION and \
+                        message["type"] == dialect.MAV_MISSION_ACCEPTED:
+                    # break the loop since the upload is successful
+                    print("Mission upload is successful")
+                    break
 
 
 if __name__ == "__main__":
     try:
         connector = Connection()
-        # device = 'com8'  # port
+        # device = 'com8'  # portself.vehicle.recv_match(type='PARAM_VALUE', blocking=True)
         # baud = 115200  # baud
         # connector.init(device, baud)
         # connector.connect_telemetry()
-
         connecting_string = 'tcp:127.0.0.1:5762'  # sitl connecting sting
         connector.init_sitl(connecting_string)
         connector.connect_sitl()
         flight_controller = FlightController(connector.get_instance())
-
-        # flight_controller.set_parameter_value('AHRS_WIND_MAX', 3)
-        # flight_controller.set_mode('GUIDED')
-        # flight_controller.turn_on_motor()
-        # flight_controller.turn_off_motor()
-        # target_locations = ((-35.361297, 149.161120, 50.0),
-        #                     (-35.360780, 149.167151, 50.0),
-        #                     (-35.365115, 149.167647, 50.0),
-        #                     (-35.364419, 149.161575, 50.0))
-        # waypoint_mission.init_target_locations(target_locations)
-        # flight_controller.set_mode('AUTO')
-
+        waypoint_mission = Waypoint(connector.get_instance())
+        flight_controller.set_mode('GUIDED')
+        flight_controller.turn_on_motor()
+        flight_controller.takeoff()
+        target_locations = ((-35.361297, 149.161120, 50.0),
+                            (-35.360780, 149.167151, 50.0),
+                            (-35.365115, 149.167647, 50.0),
+                            (-35.364419, 149.161575, 50.0))
+        waypoint_mission.init_target_locations(target_locations)
+        flight_controller.set_mode('AUTO')
 
     except Exception as e:
         print("Exception", e)
